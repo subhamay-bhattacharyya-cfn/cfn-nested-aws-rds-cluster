@@ -1,18 +1,8 @@
-[
-  {
-    "ParameterKey": "BucketBaseName",
-    "ParameterValue": "cfn-bucket"
-  },
-  {
-    "ParameterKey": "ProjectName",
-    "ParameterValue": "myproject"
-  },
-  {
-    "ParameterKey": "environment",
-    "ParameterValue": "devl"
-  },
-  {
-    "ParameterKey": "CiSuffix",
-    "ParameterValue": ""
-  }
-]
+{
+  "Environment": "devl",
+  "KmsKey": "SB-KMS",
+  "CiSuffix": "",
+  "VpcId": "vpc-0123456789abcdef0",
+  "SubnetIds": "subnet-0aaaaaaaaaaaaaaa1,subnet-0bbbbbbbbbbbbbbb2",
+  "AppSecurityGroupId": "sg-0123456789abcdef0"
+}

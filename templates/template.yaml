@@ -1,59 +1,279 @@
 AWSTemplateFormatVersion: '2010-09-09'
 
-Description: 'Nested CloudFormation template to create an S3 bucket with versioning and public access blocking'
+Description: 'Nested CloudFormation template to create an RDS DB subnet group from a comma-separated list of subnet IDs'
 
 Parameters:
   ProjectName:
     Type: String
-    Description: "Project name to use as a bucket prefix"
+    Description: "Project name used as a prefix for the DB subnet group name"
     MinLength: 1
     MaxLength: 20
     AllowedPattern: "^[a-z0-9-]+$"
     ConstraintDescription: "Project name must be lowercase letters, numbers, and hyphens only"
 
-  BucketBaseName:
-    Type: String
-    Default: cfn-bucket
-    Description: Base name for the S3 bucket (account ID, environment, and region will be appended)
-
-  environment:
+  Environment:
     Type: String
     Default: devl
-    Description: "Deployment environment for the S3 bucket"
+    Description: "Deployment environment for the DB subnet group"
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: "VPC that the database security group is created in. Must contain the subnets in SubnetIds."
+
+  AppSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: "Security group of the application subnets that is allowed to reach the database"
+
+  DatabaseType:
+    Type: String
+    Default: MySQL
+    AllowedValues:
+      - MySQL
+      - Aurora
+      - PostgreSQL
+      - Oracle
+      - SQLServer
+    Description: "Database engine. Determines the port opened to the application security group."
+
+  DatabaseVersion:
+    Type: String
+    AllowedValues:
+      # MySQL
+      - "8.0.42"
+      - "8.0.43"
+      - "8.0.44"
+      - "8.0.45"
+      - "8.0.46"
+      - "8.4.9"
+      - "8.4.10"
+      - "8.4.11"
+      # Aurora MySQL
+      - "8.0.mysql_aurora.3.11.1"
+      - "8.0.mysql_aurora.3.12.0"
+      - "8.0.mysql_aurora.3.13.0"
+      - "8.4.mysql_aurora.8.4.7"
+      - "8.4.mysql_aurora.8.4.8"
+      # PostgreSQL
+      - "16.13"
+      - "16.14"
+      - "16.15"
+      - "17.9"
+      - "17.10"
+      - "17.11"
+      - "18.4"
+      - "18.6"
+      # Oracle
+      - "19.0.0.0.ru-2026-04.rur-2026-04.r1"
+      - "19.0.0.0.ru-2026-07.spb-1.r1"
+      - "19.0.0.0.ru-2026-07.mrp-2026-07.r1"
+      # SQL Server
+      - "15.00.4490.9.v1"
+      - "16.00.4295.3.v1"
+      - "17.00.5005.3.v1"
+    ConstraintDescription: "Must be a supported version for the selected DatabaseType"
+    Description: "Database engine version. Must match DatabaseType (see Rules)."
+
+  SubnetIds:
+    Type: CommaDelimitedList
+    Description: "Comma-separated list of subnet IDs for the DB subnet group. Subnets must span at least two Availability Zones."
+    ConstraintDescription: "Must be a comma-separated list of subnet IDs (e.g. subnet-0abc123,subnet-0def456)"
+
+  DatabaseUsername:
+    Type: String
+    Default: dbadmin
+    MinLength: 1
+    MaxLength: 16
+    AllowedPattern: "^[A-Za-z][A-Za-z0-9_]*$"
+    ConstraintDescription: "Must start with a letter and contain only letters, numbers, and underscores"
+    Description: "Master username for the database. Stored in the generated Secrets Manager secret."
+
+  DatabaseName:
+    Type: String
+    Default: appdb
+    MinLength: 1
+    MaxLength: 63
+    AllowedPattern: "^[A-Za-z][A-Za-z0-9_]*$"
+    ConstraintDescription: "Must start with a letter and contain only letters, numbers, and underscores"
+    Description: "Name of the initial database created in the cluster"
 
   CiSuffix:
     Type: String
     Default: ""
-    Description: "Optional CI prefix to append to the bucket name"
+    Description: "Optional CI suffix appended to the subnet group Name tag"
 
 Conditions:
   HasCiSuffix: !Not [!Equals [!Ref CiSuffix, ""]]
+  HasCluster: !Or
+    - !Equals [!Ref DatabaseType, Aurora]
+    - !Equals [!Ref DatabaseType, PostgreSQL]
+
+Mappings:
+  DatabasePort:
+    MySQL:
+      Port: 3306
+    Aurora:
+      Port: 3306
+    PostgreSQL:
+      Port: 5432
+    Oracle:
+      Port: 1521
+    SQLServer:
+      Port: 1433
+
+  DatabaseEngine:
+    Aurora:
+      Engine: aurora-mysql
+    PostgreSQL:
+      Engine: aurora-postgresql
+
+Rules:
+  MySQLVersion:
+    RuleCondition: !Equals [!Ref DatabaseType, MySQL]
+    Assertions:
+      - Assert: !Contains [["8.0.42", "8.0.43", "8.0.44", "8.0.45", "8.0.46", "8.4.9", "8.4.10", "8.4.11"], !Ref DatabaseVersion]
+        AssertDescription: "DatabaseVersion must be a MySQL version when DatabaseType is MySQL"
+
+  AuroraVersion:
+    RuleCondition: !Equals [!Ref DatabaseType, Aurora]
+    Assertions:
+      - Assert: !Contains [["8.0.mysql_aurora.3.11.1", "8.0.mysql_aurora.3.12.0", "8.0.mysql_aurora.3.13.0", "8.4.mysql_aurora.8.4.7", "8.4.mysql_aurora.8.4.8"], !Ref DatabaseVersion]
+        AssertDescription: "DatabaseVersion must be an Aurora MySQL version when DatabaseType is Aurora"
+
+  PostgreSQLVersion:
+    RuleCondition: !Equals [!Ref DatabaseType, PostgreSQL]
+    Assertions:
+      - Assert: !Contains [["16.13", "16.14", "16.15", "17.9", "17.10", "17.11", "18.4", "18.6"], !Ref DatabaseVersion]
+        AssertDescription: "DatabaseVersion must be a PostgreSQL version when DatabaseType is PostgreSQL"
+
+  OracleVersion:
+    RuleCondition: !Equals [!Ref DatabaseType, Oracle]
+    Assertions:
+      - Assert: !Contains [["19.0.0.0.ru-2026-04.rur-2026-04.r1", "19.0.0.0.ru-2026-07.spb-1.r1", "19.0.0.0.ru-2026-07.mrp-2026-07.r1"], !Ref DatabaseVersion]
+        AssertDescription: "DatabaseVersion must be an Oracle version when DatabaseType is Oracle"
+
+  SQLServerVersion:
+    RuleCondition: !Equals [!Ref DatabaseType, SQLServer]
+    Assertions:
+      - Assert: !Contains [["15.00.4490.9.v1", "16.00.4295.3.v1", "17.00.5005.3.v1"], !Ref DatabaseVersion]
+        AssertDescription: "DatabaseVersion must be a SQL Server version when DatabaseType is SQLServer"
 
 Resources:
-  S3Bucket:
-    Type: AWS::S3::Bucket
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
     Properties:
-      BucketName: !If
+      DBSubnetGroupName: !If
         - HasCiSuffix
-        - !Sub '${ProjectName}-${BucketBaseName}-${AWS::AccountId}-${environment}-${AWS::Region}-${CiSuffix}'
-        - !Sub '${ProjectName}-${BucketBaseName}-${AWS::AccountId}-${environment}-${AWS::Region}'
-      VersioningConfiguration:
-        Status: Enabled
-      PublicAccessBlockConfiguration:
-        BlockPublicAcls: true
-        BlockPublicPolicy: true
-        IgnorePublicAcls: true
-        RestrictPublicBuckets: true
+        - !Sub '${ProjectName}-${Environment}-subnet-group-${CiSuffix}'
+        - !Sub '${ProjectName}-${Environment}-subnet-group'
+      DBSubnetGroupDescription: !Sub 'Subnet group for ${ProjectName} (${Environment})'
+      SubnetIds: !Ref SubnetIds
+      Tags:
+        - Key: Name
+          Value: !If
+            - HasCiSuffix
+            - !Sub '${ProjectName}-subnet-group-${CiSuffix}'
+            - !Sub '${ProjectName}-subnet-group'
+
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !If
+        - HasCiSuffix
+        - !Sub '${ProjectName}-${Environment}-db-sg-${CiSuffix}'
+        - !Sub '${ProjectName}-${Environment}-db-sg'
+      GroupDescription: !Sub 'Security group for ${ProjectName} database (${Environment})'
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !FindInMap [DatabasePort, !Ref DatabaseType, Port]
+          ToPort: !FindInMap [DatabasePort, !Ref DatabaseType, Port]
+          SourceSecurityGroupId: !Ref AppSecurityGroupId
+          Description: !Sub 'Allow ${DatabaseType} access from application subnets'
+      Tags:
+        - Key: Name
+          Value: !If
+            - HasCiSuffix
+            - !Sub '${ProjectName}-${Environment}-db-sg-${CiSuffix}'
+            - !Sub '${ProjectName}-${Environment}-db-sg'
+
+  DBCluster:
+    Type: AWS::RDS::DBCluster
+    Condition: HasCluster
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBClusterIdentifier: !If
+        - HasCiSuffix
+        - !Sub '${ProjectName}-${Environment}-cluster-${CiSuffix}'
+        - !Sub '${ProjectName}-${Environment}-cluster'
+      Engine: !FindInMap [DatabaseEngine, !Ref DatabaseType, Engine]
+      EngineVersion: !Ref DatabaseVersion
+      DatabaseName: !Ref DatabaseName
+      MasterUsername: !Sub '{{resolve:secretsmanager:${DBSecret}:SecretString:username}}'
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${DBSecret}:SecretString:password}}'
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VpcSecurityGroupIds:
+        - !Ref DBSecurityGroup
+      StorageEncrypted: true
+      BackupRetentionPeriod: 7
+      Tags:
+        - Key: Name
+          Value: !If
+            - HasCiSuffix
+            - !Sub '${ProjectName}-${Environment}-cluster-${CiSuffix}'
+            - !Sub '${ProjectName}-${Environment}-cluster'
+
+  DBSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      Name: !If
+        - HasCiSuffix
+        - !Sub '${ProjectName}-${Environment}-db-credentials-${CiSuffix}'
+        - !Sub '${ProjectName}-${Environment}-db-credentials'
+      Description: !Sub 'Database master credentials for ${ProjectName} (${Environment})'
+      GenerateSecretString:
+        SecretStringTemplate: !Sub '{"username": "${DatabaseUsername}"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        # Characters RDS does not allow in master passwords, plus space
+        ExcludeCharacters: '"@/\ '
+        RequireEachIncludedType: true
+      Tags:
+        - Key: Name
+          Value: !If
+            - HasCiSuffix
+            - !Sub '${ProjectName}-${Environment}-db-credentials-${CiSuffix}'
+            - !Sub '${ProjectName}-${Environment}-db-credentials'
 
 Outputs:
-  S3BucketName:
-    Description: "Name of the S3 bucket"
-    Value: !Ref S3Bucket
-    Export:
-      Name: !Sub "${AWS::StackName}-BucketName"
+  DBClusterEndpoint:
+    Condition: HasCluster
+    Description: "Writer endpoint of the database cluster"
+    Value: !GetAtt DBCluster.Endpoint.Address
 
-  S3BucketArn:
-    Description: "ARN of the S3 bucket"
-    Value: !GetAtt S3Bucket.Arn
-    Export:
-      Name: !Sub "${AWS::StackName}-BucketArn"
+  DBSubnetGroupArn:
+    Description: "ARN of the DB subnet group"
+    Value: !Sub 'arn:${AWS::Partition}:rds:${AWS::Region}:${AWS::AccountId}:subgrp:${DBSubnetGroup}'
+
+  DBSecurityGroupArn:
+    Description: "ARN of the database security group"
+    Value: !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/${DBSecurityGroup}'
+
+  DBClusterArn:
+    Condition: HasCluster
+    Description: "ARN of the database cluster"
+    Value: !Sub 'arn:${AWS::Partition}:rds:${AWS::Region}:${AWS::AccountId}:cluster:${DBCluster}'
+
+  DBSecretArn:
+    Description: "ARN of the database credentials secret"
+    Value: !Ref DBSecret
+
+  DBSubnetGroupName:
+    Description: "Name of the DB subnet group"
+    Value: !Ref DBSubnetGroup
+
+  DBSecurityGroupId:
+    Description: "ID of the database security group"
+    Value: !Ref DBSecurityGroup
